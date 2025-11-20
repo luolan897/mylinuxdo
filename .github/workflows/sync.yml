@@ -1,0 +1,65 @@
+###
+#使用说明：
+#1、此工作流为手动＋可非手动触发运行，二者的环境变量互不干扰！
+#2、手动触发时请根据提示选择即可！
+#3、自动触发请取消9、10行#注释，并设置好45、46、47行"双引号"内的变量值
+###
+name: Sync(同步/更新脚本) #更新上游代码
+on:
+  #schedule:
+    #- cron: '0 16 */7 * *'
+  workflow_dispatch:
+    inputs:
+      logLevel:
+        description: 'Log level'
+        required: true
+        default: 'warning'
+      source_repo:
+        description: '上游仓库源地址'
+        required: true
+        default: 'grbnb/linuxdo-checkin.git'
+      source_branch:
+        description: '上游仓库源分支名'
+        required: true
+        default: 'main'
+      destination_branch:
+        description: '本地仓库目标分支名'
+        required: true
+        default: 'main'
+  
+  
+jobs:
+  repo-sync:
+    env:
+      PAT: ${{ secrets.PAT }} #此处PAT需要申请，教程详见：https://www.jianshu.com/p/bb82b3ad1d11,需要repo和workflow权限
+    runs-on: ubuntu-latest
+    permissions: write-all
+    timeout-minutes: 3
+    #if: ${{ github.event.repository.private }}   ## 限制在私有仓库下运行
+    steps:
+      - name: decision ENV
+        id: decision
+        run: |
+          [ ! ${{ github.event.inputs.logLevel }} ] && {
+              echo AUTO_RUN="true" >> $GITHUB_OUTPUT                       ## 自动触发变量配置
+              echo source_repo="grbnb/linuxdo-checkin.git" >> $GITHUB_ENV  ## 同步的上游源仓库地址
+              echo source_branch="main" >> $GITHUB_ENV                     ## 上游仓库源分支名
+              echo destination_branch="main" >> $GITHUB_ENV                ## 本地仓库目标分支名
+              exit 0
+          }
+          echo source_repo=${{ github.event.inputs.source_repo }} >> $GITHUB_ENV
+          echo source_branch=${{ github.event.inputs.source_branch }} >> $GITHUB_ENV
+          echo destination_branch=${{ github.event.inputs.destination_branch }} >> $GITHUB_ENV
+      
+      - uses: actions/checkout@main
+        with:
+          persist-credentials: false
+      
+      - name: sync
+        uses: repo-sync/github-sync@v2
+        if: env.PAT
+        with:
+          source_repo: "https://github.com/${{ env.source_repo }}"
+          source_branch: "${{ env.source_branch }}"
+          destination_branch: "${{ env.destination_branch }}"
+          github_token: ${{ secrets.PAT }}
