@@ -179,16 +179,18 @@ class LinuxDoBrowser:
 
     def click_topic(self):
         topic_list = self.page.ele("@id=list-area").eles(".:title")
-        logger.info(f"发现 {len(topic_list)} 个主题帖，随机选择5个")
-        for topic in random.sample(topic_list, 5):
+        logger.info(f"发现 {len(topic_list)} 个主题帖，随机选择30个")
+        for topic in random.sample(topic_list, 30):
             self.click_one_topic(topic.attr("href"))
 
     @retry_decorator()
     def click_one_topic(self, topic_url):
         new_page = self.browser.new_tab()
         new_page.get(topic_url)
-        if random.random() < 0.3:  # 0.3 * 30 = 9
-            self.click_like(new_page)
+        
+        # --- 修改处：删除了点赞逻辑 ---
+        # 原有的随机点赞代码已被移除
+        
         self.browse_post(new_page)
         new_page.close()
 
@@ -238,7 +240,9 @@ class LinuxDoBrowser:
         self.page.close()
         self.browser.quit()
 
-     def print_connect_info(self):
+    # --- 修改处：删除了 click_like 函数 ---
+
+    def print_connect_info(self):
         logger.info("获取连接信息")
         page = self.browser.new_tab()
         page.get("https://connect.linux.do/")
