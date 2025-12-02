@@ -179,8 +179,8 @@ class LinuxDoBrowser:
 
     def click_topic(self):
         topic_list = self.page.ele("@id=list-area").eles(".:title")
-        logger.info(f"发现 {len(topic_list)} 个主题帖，随机选择30个")
-        for topic in random.sample(topic_list, 30):
+        logger.info(f"发现 {len(topic_list)} 个主题帖，随机选择5个")
+        for topic in random.sample(topic_list, 5):
             self.click_one_topic(topic.attr("href"))
 
     @retry_decorator()
@@ -238,21 +238,7 @@ class LinuxDoBrowser:
         self.page.close()
         self.browser.quit()
 
-    def click_like(self, page):
-        try:
-            # 专门查找未点赞的按钮
-            like_button = page.ele(".discourse-reactions-reaction-button")
-            if like_button:
-                logger.info("找到未点赞的帖子，准备点赞")
-                like_button.click()
-                logger.info("点赞成功")
-                time.sleep(random.uniform(1, 2))
-            else:
-                logger.info("帖子可能已经点过赞了")
-        except Exception as e:
-            logger.error(f"点赞失败: {str(e)}")
-
-    def print_connect_info(self):
+     def print_connect_info(self):
         logger.info("获取连接信息")
         page = self.browser.new_tab()
         page.get("https://connect.linux.do/")
