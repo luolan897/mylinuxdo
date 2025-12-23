@@ -1,6 +1,6 @@
 """
 cron: 0 */7 * * *
-new Env("Linux.Do 自动刷帖(修复版)")
+new Env("Linux.Do 签到")
 """
 
 import os
@@ -13,12 +13,6 @@ from DrissionPage import ChromiumOptions, Chromium
 from tabulate import tabulate
 from pyvirtualdisplay import Display
 
-# --- 核心配置 ---
-TARGET_TOPIC_COUNT = 100   # 目标刷帖数量
-MAX_DAILY_LIKES = 15       # 每天点赞上限
-LIKE_PROBABILITY = 0.2     # 点赞概率 20%
-# ----------------
-
 try:
     from sendNotify import send
 except:
@@ -26,13 +20,12 @@ except:
         print("未找到通知文件sendNotify.py不启用通知！")
 
 List = []
-current_like_count = 0
 
-# 启动虚拟显示器
 display = Display(size=(1920, 1080))
 display.start()
 
 def create_extension(plugin_path=None):
+    # 创建Chrome插件的manifest.json文件内容
     manifest_json = """
 {
     "manifest_version": 3,
@@ -40,8 +33,12 @@ def create_extension(plugin_path=None):
     "version": "2.1",
     "content_scripts": [
         {
-            "js": ["./script.js"],
-            "matches": ["<all_urls>"],
+            "js": [
+                "./script.js"
+            ],
+            "matches": [
+                "<all_urls>"
+            ],
             "run_at": "document_start",
             "all_frames": true,
             "world": "MAIN"
@@ -49,21 +46,32 @@ def create_extension(plugin_path=None):
     ]
 }
     """
+
+    # 创建Chrome插件的script.js文件内容
     script_js = """
 function getRandomInt(min, max) {
     return Math.floor(Math.random() * (max - min + 1)) + min;
 }
+
+// old method wouldn't work on 4k screens
+
 let screenX = getRandomInt(800, 1200);
 let screenY = getRandomInt(400, 600);
+
 Object.defineProperty(MouseEvent.prototype, 'screenX', { value: screenX });
+
 Object.defineProperty(MouseEvent.prototype, 'screenY', { value: screenY });
     """
+
+    # 创建插件目录并写入manifest.json和script.js文件
     os.makedirs(plugin_path, exist_ok=True)
     with open(os.path.join(plugin_path, "manifest.json"), "w+") as f:
         f.write(manifest_json)
     with open(os.path.join(plugin_path, "script.js"), "w+") as f:
         f.write(script_js)
+
     return os.path.join(plugin_path)
+
 
 def retry_decorator(retries=3):
     def decorator(func):
@@ -73,29 +81,44 @@ def retry_decorator(retries=3):
                 try:
                     return func(*args, **kwargs)
                 except Exception as e:
-                    if attempt == retries - 1:
-                        logger.error(f"Error: {str(e)}")
+                    if attempt == retries - 1:  # 最后一次尝试
+                        logger.error(f"函数 {func.__name__} 最终执行失败: {str(e)}")
+                    logger.warning(
+                        f"函数 {func.__name__} 第 {attempt + 1}/{retries} 次尝试失败: {str(e)}"
+                    )
                     time.sleep(1)
             return None
+
         return wrapper
+
     return decorator
+
+
 
 USERNAME = os.environ.get("LINUXDO_USERNAME")
 PASSWORD = os.environ.get("LINUXDO_PASSWORD")
-if not USERNAME: USERNAME = os.environ.get("USERNAME")
-if not PASSWORD: PASSWORD = os.environ.get("PASSWORD")
+BROWSE_ENABLED = os.environ.get("BROWSE_ENABLED", "true").strip().lower() not in [
+    "false",
+    "0",
+    "off",
+]
+if not USERNAME:
+    USERNAME = os.environ.get("USERNAME")
+if not PASSWORD:
+    PASSWORD = os.environ.get("PASSWORD")
 
+HOME_URL = "https://linux.do/"
 LOGIN_URL = "https://linux.do/login"
+
 
 class LinuxDoBrowser:
     def __init__(self) -> None:
+        # co = ChromiumOptions().set_browser_path(r"/usr/bin/google-chrome-stable")
         co = ChromiumOptions()
         co.auto_port()
-        co.set_timeouts(base=5)
-        
+        co.set_timeouts(base=2)
         turnstilePatch = create_extension(plugin_path="turnstilePatch")
         co.add_extension(path=turnstilePatch)
-        
         co.set_argument('--disable-blink-features=AutomationControlled')
         co.set_argument('--disable-infobars')
         co.set_argument('--no-sandbox')
@@ -106,175 +129,162 @@ class LinuxDoBrowser:
 
     def getTurnstileToken(self):
         self.page.run_js("try { turnstile.reset() } catch(e) { }")
-        for i in range(10):
+
+        turnstileResponse = None
+        for i in range(0, 10):
             try:
-                if self.page.run_js("try { return turnstile.getResponse() } catch(e) { return null }"):
-                    return True
-                iframe = self.page.ele("tag:iframe")
-                if iframe:
-                    btn = iframe.ele("tag:body").shadow_root.ele("tag:input")
-                    if btn: btn.click()
-            except:
-                pass
+                turnstileResponse = self.page.run_js("try { return turnstile.getResponse() } catch(e) { return null }")
+                if turnstileResponse:
+                    return turnstileResponse
+
+                challengeSolution = self.page.ele("@name=cf-turnstile-response")
+                challengeWrapper = challengeSolution.parent()
+                challengeIframe = challengeWrapper.shadow_root.ele("tag:iframe")
+                challengeIframeBody = challengeIframe.ele("tag:body").shadow_root
+                challengeButton = challengeIframeBody.ele("tag:input")
+                challengeButton.click()
+            except Exception as e:
+                logger.warning(f"处理 Turnstile 时出错: {str(e)}")
             time.sleep(1)
+        self.page.refresh()
+        # raise Exception("failed to solve turnstile")
 
     def login(self):
-        logger.info("开始登录...")
+        logger.info("开始登录")
         self.page.get(LOGIN_URL)
-        time.sleep(3)
-        self.getTurnstileToken()
-        
-        try:
+        time.sleep(2)
+        turnstile_token = self.getTurnstileToken()
+        logger.info(f"turnstile_token: {turnstile_token}")
+        if turnstile_token:
+            self.page.get_screenshot("screenshot.png")
             self.page.ele("@id=login-account-name").input(USERNAME)
             self.page.ele("@id=login-account-password").input(PASSWORD)
             self.page.ele("@id=login-button").click()
-            time.sleep(5)
-            
-            if self.page.ele("@id=current-user", timeout=5):
-                logger.success("登录成功")
-                List.append("✅ 登录成功")
+            time.sleep(10)
+            user_ele = self.page.ele("@id=current-user")
+            if not user_ele:
+                logger.error("登录失败")
+                List.append("❌每日登录失败")
+                return False
+            else:
+                logger.info("登录成功")
+                List.append("✅每日登录成功")
                 return True
-            return False
-        except Exception as e:
-            logger.error(f"登录异常: {e}")
+        else:
+            self.page.get("https://ping0.cc/geo")
+            ip_addr = self.page.ele('tag:body').text
+            logger.info(f"当前ip无法访问：\n {ip_addr}")
+            List.append(f"当前ip无法访问：\n {ip_addr}")
             return False
 
     def click_topic(self):
-        # -----------------------------------------------------
-        # 修复核心：不再直接 sample，而是先滚动收集链接
-        # -----------------------------------------------------
-        logger.info(f"正在收集帖子链接，目标: {TARGET_TOPIC_COUNT} 篇...")
-        collected_urls = set()
-        scroll_attempts = 0
-        
-        # 循环滚动，直到收集到足够的链接
-        while len(collected_urls) < TARGET_TOPIC_COUNT and scroll_attempts < 50:
-            # 提取当前页面的所有帖子链接
-            links = self.page.ele("@id=list-area").eles("tag:a")
-            for link in links:
-                url = link.attr("href")
-                # 确保是帖子链接
-                if url and "/t/topic/" in url: 
-                    collected_urls.add(url)
-            
-            logger.info(f"当前已收集: {len(collected_urls)} 篇")
-            
-            if len(collected_urls) >= TARGET_TOPIC_COUNT:
-                break
-                
-            # 向下滚动加载更多
-            self.page.scroll.down(2000)
-            time.sleep(2) # 等待新内容加载
-            scroll_attempts += 1
-
-        # 截取目标数量
-        target_list = list(collected_urls)[:TARGET_TOPIC_COUNT]
-        logger.info(f"收集完毕，准备浏览 {len(target_list)} 篇帖子")
-
-        # 开始浏览
-        for i, url in enumerate(target_list):
-            try:
-                logger.info(f"[{i+1}/{len(target_list)}] 浏览: {url}")
-                self.visit_and_scroll(url)
-                
-                # 防止请求过快，每10篇休息一下
-                if (i + 1) % 10 == 0:
-                    time.sleep(3)
-            except Exception as e:
-                logger.warning(f"浏览跳过: {e}")
+        topic_list = self.page.ele("@id=list-area").eles(".:title")
+        logger.info(f"发现 {len(topic_list)} 个主题帖，随机选择10个")
+        for topic in random.sample(topic_list, 30):
+            self.click_one_topic(topic.attr("href"))
 
     @retry_decorator()
-    def visit_and_scroll(self, url):
-        tab = self.browser.new_tab()
-        try:
-            tab.get(url)
-            # 模拟阅读滚动
-            self.simulate_reading(tab)
-            # 尝试点赞
-            self.try_like(tab)
-        finally:
-            tab.close()
+    def click_one_topic(self, topic_url):
+        new_page = self.browser.new_tab()
+        new_page.get(topic_url)
+        if random.random() < 0.3:  # 0.3 * 30 = 9
+            self.click_like(new_page)
+        self.browse_post(new_page)
+        new_page.close()
 
-    def simulate_reading(self, tab):
-        """模拟人类阅读：慢慢往下滚"""
-        current_scroll = 0
-        while True:
-            scroll_step = random.randint(500, 800)
-            tab.run_js(f"window.scrollBy({{top: {scroll_step}, behavior: 'smooth'}})")
-            current_scroll += scroll_step
-            
-            # 随机停留 0.5 - 1.5 秒
-            time.sleep(random.uniform(0.5, 1.5))
-            
-            # 检查是否到底
-            scrolled_height = tab.run_js("return window.scrollY + window.innerHeight")
-            total_height = tab.run_js("return document.body.scrollHeight")
-            
-            if scrolled_height >= total_height - 100: # 接近底部
+    def browse_post(self, page):
+        prev_url = None
+        # 开始自动滚动，最多滚动10次
+        for _ in range(10):
+            # 随机滚动一段距离
+            scroll_distance = random.randint(550, 650)  # 随机滚动 550-650 像素
+            logger.info(f"向下滚动 {scroll_distance} 像素...")
+            page.run_js(f"window.scrollBy(0, {scroll_distance})")
+            logger.info(f"已加载页面: {page.url}")
+
+            if random.random() < 0.03:  # 33 * 4 = 132
+                logger.success("随机退出浏览")
                 break
-            
-            if current_scroll > 10000: # 防止无限长的帖子
+
+            # 检查是否到达页面底部
+            at_bottom = page.run_js(
+                "window.scrollY + window.innerHeight >= document.body.scrollHeight"
+            )
+            current_url = page.url
+            if current_url != prev_url:
+                prev_url = current_url
+            elif at_bottom and prev_url == current_url:
+                logger.success("已到达页面底部，退出浏览")
                 break
-        
-        time.sleep(1) # 到底后稍微停顿
 
-    def try_like(self, tab):
-        """随机点赞"""
-        global current_like_count
-        if current_like_count >= MAX_DAILY_LIKES: return
-        if random.random() > LIKE_PROBABILITY: return
-
-        try:
-            tab.scroll.up(300) # 往回一点找按钮
-            like_btn = tab.ele("css:button.toggle-like:not(.d-liked)")
-            if like_btn:
-                title = like_btn.attr("title")
-                if not title or "取消" not in title:
-                    like_btn.click()
-                    current_like_count += 1
-                    logger.success(f"❤️ 点赞成功 (今日: {current_like_count})")
-                    time.sleep(1)
-        except:
-            pass
+            # 动态随机等待
+            wait_time = random.uniform(2, 4)  # 随机等待 2-4 秒
+            logger.info(f"等待 {wait_time:.2f} 秒...")
+            time.sleep(wait_time)
 
     def run(self):
-        if not self.login():
-            sys.exit(1)
+        if not self.login():  # 登录
+            logger.error("登录失败，程序终止")
+            self.send_notifications()  # 发送通知
+            sys.exit(1)  # 使用非零退出码终止整个程序
 
-        self.click_topic()
-        
-        List.append(f"✅ 任务完成: 刷帖 {TARGET_TOPIC_COUNT} 篇")
-        List.append(f"❤️ 本次点赞: {current_like_count} 次")
-        
-        self.print_connect_info()
-        self.send_notifications()
+        if BROWSE_ENABLED:
+            self.click_topic()  # 点击主题
+            logger.info("完成浏览任务")
+            List.append("完成浏览任务")
+
+        self.print_connect_info()  # 打印连接信息
+        self.send_notifications()  # 发送通知
         self.page.close()
         self.browser.quit()
 
-    def print_connect_info(self):
+    def click_like(self, page):
         try:
-            tab = self.browser.new_tab()
-            tab.get("https://connect.linux.do/")
-            rows = tab.ele("tag:table").eles("tag:tr")
-            if rows:
-                info = []
-                for row in rows:
-                    cells = row.eles("tag:td")
-                    if len(cells) >= 3:
-                        info.append([c.text.strip() for c in cells[:3]])
-                msg = tabulate(info, headers=["项目", "当前", "要求"], tablefmt="pretty")
-                print(msg)
-                List.append(msg)
-            tab.close()
-        except:
-            pass
+            # 专门查找未点赞的按钮
+            like_button = page.ele(".discourse-reactions-reaction-button")
+            if like_button:
+                logger.info("找到未点赞的帖子，准备点赞")
+                like_button.click()
+                logger.info("点赞成功")
+                time.sleep(random.uniform(1, 2))
+            else:
+                logger.info("帖子可能已经点过赞了")
+        except Exception as e:
+            logger.error(f"点赞失败: {str(e)}")
+
+    def print_connect_info(self):
+        logger.info("获取连接信息")
+        page = self.browser.new_tab()
+        page.get("https://connect.linux.do/")
+        rows = page.ele("tag:table").eles("tag:tr")
+        if rows:
+    
+            info = []
+    
+            for row in rows:
+                cells = row.eles("tag:td")
+                if len(cells) >= 3:
+                    project = cells[0].text.strip()
+                    current = cells[1].text.strip()
+                    requirement = cells[2].text.strip()
+                    info.append([project, current, requirement])
+            msg = tabulate(info, headers=["项目", "当前", "要求"], tablefmt="pretty")
+            print("--------------Connect Info-----------------")
+            print(msg)
+            List.append(msg)
+        else:
+            logger.info("连接错误，请检查！（账户等级过低，无法查看任务信息）")
+            List.append("连接错误，请检查！（账户等级过低，无法查看任务信息）")
+        page.close()
 
     def send_notifications(self):
         msg = '\n'.join(List)
-        send("Linux.Do 助手", msg)
+        send("LINUX DO", msg)
 
 if __name__ == "__main__":
     if not USERNAME or not PASSWORD:
-        print("请设置环境变量")
-        sys.exit(1)
-    LinuxDoBrowser().run()
+        print("Please set USERNAME and PASSWORD")
+        send("LINUX DO", "Please set USERNAME and PASSWORD")
+        exit(1)
+    l = LinuxDoBrowser()
+    l.run()
